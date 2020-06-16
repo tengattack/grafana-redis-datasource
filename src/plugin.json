@@ -1,0 +1,34 @@
+{
+  "name": "Redis",
+  "id": "grafana-redis-datasource",
+  "type": "datasource",
+
+  "partials": {
+    "config": "public/app/plugins/datasource/grafana-redis-datasource/partials/config.html"
+  },
+
+  "metrics": true,
+  "annotations": false,
+
+  "info": {
+    "description": "Redis datasource",
+    "author": {
+      "name": "tengattack"
+    },
+    "logos": {
+      "small": "img/redis_logo.svg",
+      "large": "img/redis_logo.svg"
+    },
+    "links": [
+      {"name": "GitHub", "url": "https://github.com/tengattack/grafana-redis-datasource"},
+      {"name": "MIT License", "url": "https://github.com/tengattack/grafana-redis-datasource/blob/master/LICENSE"}
+    ],
+    "version": "0.0.1",
+    "updated": "2020-06-18"
+  },
+
+  "dependencies": {
+    "grafanaVersion": "3.x.x",
+    "plugins": [ ]
+  }
+}
