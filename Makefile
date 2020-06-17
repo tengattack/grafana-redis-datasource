@@ -1,11 +1,12 @@
-NAME=mongodb-grafana-proxy
+NAME=redis-grafana-proxy
 VERSION=$(shell cat package.json | grep version | head -1 | sed 's/.*: "\([^"]*\)".*/\1/')
-PORT=3333
+PORT=3334
 REGISTRY_PREFIX=$(if $(REGISTRY),$(addsuffix /, $(REGISTRY)))
 
 .PHONY: build publish
 
 build:
+	npm run build
 	docker build -t ${NAME}:${VERSION} .
 
 publish:

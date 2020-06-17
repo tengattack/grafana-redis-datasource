@@ -5,5 +5,3 @@ node_modules/
 
 debugging/grafana
 debugging/grafana-*
-
-dist/
