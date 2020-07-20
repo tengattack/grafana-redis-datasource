@@ -183,28 +183,39 @@ function setCORSHeaders(res)
 
 function parseQuery(query, substitutions)
 {
-  var doc = {}
+  var doc = { commands: [] }
   var queryErrors = []
 
-  query = query.trim()
-  var args = splitargs(query)
-  if (args.length < 2) {
-    queryErrors.push("Query must have command and arguments")
-    return null
-  }
+  var querys = query.split('\n')
 
-  // Query is of the form <command> ...arguments
-  // Check command first.
-  var command = args.shift().toUpperCase()
-  if (!COMMANDS.includes(command)) {
-    queryErrors.push("Unknown command " + command + "")
-  } else {
-    doc.command = command
-    doc.args = args
+  for (var i = 0; i < querys.length; i++) {
+    var q = querys[i].trim()
+    if (!q || q.startsWith('#')) {
+      continue
+    }
+
+    var args = splitargs(q)
+    if (args.length < 2) {
+      queryErrors.push('line ' + (i + 1) + ': Query must have command and arguments')
+      break
+    }
+
+    // Query is of the form <command> ...arguments
+    // Check command first.
+    var command = args.shift().toUpperCase()
+    if (!COMMANDS.includes(command)) {
+      queryErrors.push('line ' + (i + 1) + ': Unknown command ' + command + '')
+      break
+    }
+
+    doc.commands.push({ command, args })
   }
 
   if (queryErrors.length > 0) {
     doc.err = new Error('Failed to parse query - ' + queryErrors.join(':'))
+  }
+  if (doc.commands.length <= 0) {
+    doc.err = new Error('No command need to be executed')
   }
 
   return doc
@@ -216,28 +227,87 @@ function runQuery(requestId, queryId, body, queryArgs, res, next)
 {
   var client = redis.createClient(body.db.url)
   client.on('connect', function () {
-    logQuery(queryArgs.command, queryArgs.args)
+    logQuery(queryArgs.commands)
     var stopwatch = new Stopwatch(true)
-    var args = queryArgs.args.concat(function (err, result) {
+    var done = 0
+    var rowsList = []
+    var lastErr = null
+    var elapsedTimeMs
+    var checkDone = function (err, k, cmd, result) {
+      done++
       if (err) {
-        client.quit()
-        queryError(requestId, err, next)
-        return
+        lastErr = err
       }
-      client.quit()
-      var results, elapsedTimeMs
       try {
-        results = getTableResults(queryArgs.command, queryArgs.args, result)
-        elapsedTimeMs = stopwatch.stop()
+        rowsList[k] = getTableResults(cmd.command, cmd.args, result, queryArgs.commands.length > 1 ? (k + 1) : null)
       } catch (err) {
-        queryError(requestId, err, next)
-        return
+        lastErr = err
       }
-      logTiming(queryArgs, elapsedTimeMs)
-      // Mark query as finished - will send back results when all queries finished
-      queryFinished(requestId, queryId, results, res, next)
-    })
-    client[queryArgs.command].apply(client, args)
+
+      if (done >= queryArgs.commands.length) {
+        client.quit()
+        elapsedTimeMs = stopwatch.stop()
+        logTiming(queryArgs, elapsedTimeMs)
+        if (lastErr) {
+          queryError(requestId, lastErr, next)
+          return
+        }
+
+        var sortedColumns = ['n', 'key', 'field', 'value', 'member', 'score', 'result']
+        var columns = []
+        for (var i = 0; i < rowsList.length; i++) {
+          var rows = rowsList[i]
+          if (!rows || rows.length <= 0) {
+            continue
+          }
+          columns = _.union(columns, Object.keys(rows[0]))
+        }
+        var newColumns = []
+        for (var i = 0; i < sortedColumns.length; i++) {
+          if (columns.includes(sortedColumns[i])) {
+            newColumns.push(sortedColumns[i])
+          }
+        }
+        columns = newColumns
+
+        var results = {}
+        results["table"] = {
+          type: "table",
+          columns: columns.map(function (col) { return { text: col, type: 'text' } }),
+        }
+        var resultRows = []
+        for (var i = 0; i < rowsList.length; i++) {
+          var rows = rowsList[i]
+          if (!rows || rows.length <= 0) {
+            continue
+          }
+          resultRows = resultRows.concat(rows.map(function (row) {
+            var line = []
+            for (var j = 0; j < columns.length; j++) {
+              if (columns[j] in row) {
+                line.push(row[columns[j]])
+              } else {
+                line.push(null)
+              }
+            }
+            return line
+          }))
+        }
+        results['table'].rows = resultRows
+
+        // Mark query as finished - will send back results when all queries finished
+        queryFinished(requestId, queryId, results, res, next)
+      }
+    }
+    for (var i = 0; i < queryArgs.commands.length; i++) {
+      (function (k, cmd) {
+        var cmd = queryArgs.commands[i]
+        var args = cmd.args.concat(function (err, result) {
+          checkDone(err, k, cmd, result)
+        })
+        client[cmd.command].apply(client, args)
+      })(i, queryArgs.commands[i])
+    }
   })
   client.on('error', function (err) {
     client.quit()
@@ -245,57 +315,52 @@ function runQuery(requestId, queryId, body, queryArgs, res, next)
   })
 }
 
-function getTableResults(command, args, result)
+function getTableResults(command, args, result, n = null)
 {
-  var columns = []
   var rows = []
   switch (command) {
   case 'GET':
-    columns = [ 'key', 'value' ]
-    rows.push([ args[0], result ])
+    rows.push({ key: args[0], value: result })
     break
   case 'MGET':
-    columns = [ 'key', 'value' ]
     for (var i = 0; i < args.length; i++) {
-      rows.push([ args[i], result[i] ])
+      rows.push({ key: args[i], value: result[i] })
     }
     break
 
   case 'HGET':
-    columns = [ 'key', 'field', 'value' ]
-    rows.push([ args[0], args[1], result ])
+    rows.push({ key: args[0], field: args[1], value: result })
     break
   case 'HMGET':
-    columns = [ 'key', 'field', 'value' ]
     for (var i = 1; i < args.length; i++) {
-      rows.push([ args[0], args[i], result[i - 1] ])
+      rows.push({ key: args[0], field: args[i], value: result[i - 1] })
     }
     break
   case 'HGETALL':
-    columns = [ 'key', 'field', 'value' ]
     for (var field in result) {
-      rows.push([ args[0], field, result[field] ])
+      rows.push({ key: args[0], field: field, value: result[field] })
     }
     break
 
   case 'LINDEX':
-    columns = [ 'key', 'value' ]
-    rows.push([ args[0], result ])
+    rows.push({ key: args[0], value: result })
     break
   case 'LRANGE':
-    columns = [ 'key', 'value' ]
     for (var i = 0; i < result.length; i++) {
-      rows.push([ args[0], result[i] ])
+      rows.push({ key: args[0], value: result[i] })
     }
     break
 
   case 'SMEMBERS':
+    for (var i = 0; i < result.length; i++) {
+      rows.push({ key: args[0], member: result[i] })
+    }
+    break
   case 'SDIFF':
   case 'SINTER':
   case 'SUNION':
-    columns = [ 'member' ]
     for (var i = 0; i < result.length; i++) {
-      rows.push([ result[i] ])
+      rows.push({ member: result[i] })
     }
     break
 
@@ -307,15 +372,11 @@ function getTableResults(command, args, result)
   case 'ZREVRANGEBYSCORE':
     // REVIEW: by lex has no WITHSCORES option
     var withScore = args[3] && (args[3].toUpperCase() === 'WITHSCORES')
-    columns = [ 'member' ]
-    if (withScore) {
-      columns.push('score')
-    }
     for (var i = 0; i < result.length; i++) {
-      var row = [ result[i] ]
+      var row = { key: args[0], member: result[i] }
       if (withScore) {
         i++
-        row.push(result[i])
+        row.score = result[i]
       }
       rows.push(row)
     }
@@ -333,18 +394,17 @@ function getTableResults(command, args, result)
   case 'ZRANK':
   case 'ZREVRANK':
   case 'ZSCORE':
-    columns = [ 'result' ]
-    rows.push([ result ])
+    rows.push({ result: result })
     break
   }
 
-  var results = {}
-  results["table"] = {
-    columns : columns.map(function (col) { return { text: col, type: 'text' } }),
-    rows : rows,
-    type : "table"
+  if (n !== null) {
+    rows.forEach((row) => {
+      row.n = n
+    })
   }
-  return results
+
+  return rows
 }
 
 // TODO: Runs a query to support templates.
@@ -366,14 +426,12 @@ function logRequest(body, type)
   }
 }
 
-function logQuery(command, args)
+function logQuery(commands)
 {
   if (serverConfig.logQueries) {
-    console.log("Command:", command)
-    if (args != null) {
-      console.log("Args:")
-      console.log(JSON.stringify(args,null,2))
-    }
+    console.log("Command:", commands.map(function (cmd) {
+      return cmd.command + ' ' + cmd.args.join(' ')
+    }).join('; '))
   }
 }
 
