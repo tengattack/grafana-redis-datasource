@@ -23,13 +23,28 @@ var COMMANDS = [
 var app = express()
 app.use(bodyParser.json())
 
+function getQueryPassword(req) {
+  const auth = (req.headers.authorization || '').split(' ')
+  if (auth[0] === 'Basic') {
+    const b64auth = auth[1] || ''
+    return Buffer.from(b64auth, 'base64').toString()
+  }
+  return null
+}
+
 // Called by test
 app.all('/', function (req, res, next)
 {
   logRequest(req.body, "/")
   setCORSHeaders(res)
 
-  var client = redis.createClient(req.body.db.url)
+  const opts = {}
+  const pass = getQueryPassword(req)
+  if (pass) {
+    opts.password = pass
+  }
+
+  var client = redis.createClient(req.body.db.url, opts)
   client.on('connect', function () {
     res.send({ status : "success",
                display_status : "Success",
@@ -58,7 +73,7 @@ app.all('/search', function (req, res, next)
   var queryStates = []
   requestsPending[requestId] = queryStates
   // Parse query string in target
-  queryArgs = parseQuery(req.body.target, {})
+  queryArgs = parseQuery(req, req.body.target, {})
   if (queryArgs.err != null) {
     queryError(requestId, queryArgs.err, next)
   } else {
@@ -144,7 +159,7 @@ app.all('/query', function (req, res, next)
 
     for (var queryId = 0; queryId < req.body.targets.length && !error; queryId++) {
       var tg = req.body.targets[queryId]
-      queryArgs = parseQuery(tg.target, substitutions)
+      queryArgs = parseQuery(req, tg.target, substitutions)
       queryArgs.type = tg.type
       if (queryArgs.err != null) {
         queryError(requestId, queryArgs.err, next)
@@ -181,10 +196,17 @@ function setCORSHeaders(res)
   res.setHeader("Access-Control-Allow-Headers", "accept, content-type")
 }
 
-function parseQuery(query, substitutions)
+function parseQuery(req, query, substitutions)
 {
   var doc = { commands: [] }
   var queryErrors = []
+
+  const opts = {}
+  const pass = getQueryPassword(req)
+  if (pass) {
+    opts.password = pass
+  }
+  doc.connectOpts = opts
 
   var querys = query.split('\n')
 
@@ -225,7 +247,7 @@ function parseQuery(query, substitutions)
 // { value : 0.34334, ts : <epoch time in seconds> }
 function runQuery(requestId, queryId, body, queryArgs, res, next)
 {
-  var client = redis.createClient(body.db.url)
+  var client = redis.createClient(body.db.url, queryArgs.connectOpts)
   client.on('connect', function () {
     logQuery(queryArgs.commands)
     var stopwatch = new Stopwatch(true)
