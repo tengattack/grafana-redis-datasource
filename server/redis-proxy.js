@@ -45,7 +45,12 @@ app.all('/', function (req, res, next)
   }
 
   var client = redis.createClient(req.body.db.url, opts)
-  client.on('connect', function () {
+  var sent = false
+  client.on('ready', function () {
+    if (sent) {
+      return
+    }
+    sent = true
     res.send({ status : "success",
                display_status : "Success",
                message : 'Redis Connection test OK' })
@@ -53,6 +58,11 @@ app.all('/', function (req, res, next)
     next()
   })
   client.on('error', function (err) {
+    console.error('Redis Connection Error:', err)
+    if (sent) {
+      return
+    }
+    sent = true
     res.send({ status : "error",
                display_status : "Error",
                message : 'Redis Connection Error: ' + err.message })
@@ -248,7 +258,7 @@ function parseQuery(req, query, substitutions)
 function runQuery(requestId, queryId, body, queryArgs, res, next)
 {
   var client = redis.createClient(body.db.url, queryArgs.connectOpts)
-  client.on('connect', function () {
+  client.on('ready', function () {
     logQuery(queryArgs.commands)
     var stopwatch = new Stopwatch(true)
     var done = 0
@@ -332,6 +342,7 @@ function runQuery(requestId, queryId, body, queryArgs, res, next)
     }
   })
   client.on('error', function (err) {
+    console.error('Redis Connection Error:', err)
     client.quit()
     queryError(requestId, err, next)
   })
